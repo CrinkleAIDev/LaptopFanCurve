@@ -10,6 +10,7 @@
 //   app will ever write that profile.
 #include "Identify.h"
 
+#include <commctrl.h>
 #include <commdlg.h>
 #include <d2d1.h>
 #include <dwmapi.h>
@@ -34,6 +35,8 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 using namespace acer;
 namespace fs = std::filesystem;
@@ -280,7 +283,7 @@ struct App {
     unsigned laptopProfile = 99;
     Telemetry tele;
     std::deque<unsigned> cpuHist, gpuHist;
-    int failures = 0;
+    int failures = 0, teleFails = 0;
     ULONGLONG lastFullVerify = 0, lastEcAttempt = 0;
     bool startup = false, quitting = false, trayHintShown = false, startHidden = false;
     std::wstring status;
@@ -631,6 +634,20 @@ void Tick(App& a) {
     try {
         if (p.verified == Verify::Unknown) VerifyProfile(a, p);
         if (!p.enabled || p.tripped || p.verified != Verify::Ok) return;
+        // A quieter-than-Acer curve needs working temperature readings for the 95 C watchdog;
+        // without them for about 10 s, go back to Acer's curve.
+        if (p.applied && !a.tele.ok && Quieter(p.saved, p.factory)) {
+            if (++a.teleFails >= 5) {
+                a.teleFails = 0;
+                p.tripped = true;
+                RestoreProfile(a, p, L"temperature readings unavailable");
+                Notify(a, L"Acer fan curve restored", L"Temperature readings stopped, so your quieter curve was turned off for safety.");
+                a.status = L"Temperature readings stopped; Acer's curve was restored for safety.";
+                return;
+            }
+        } else {
+            a.teleFails = 0;
+        }
         if (p.applied && a.tele.ok && (a.tele.cpuTemp >= kWatchdogC || a.tele.gpuTemp >= kWatchdogC) &&
             Quieter(p.saved, p.factory)) {
             p.tripped = true;
@@ -643,7 +660,7 @@ void Tick(App& a) {
         bool need = !p.applied;
         if (!need) {
             EcLock lock(1000);
-            need = a.ec.ReadXram(static_cast<std::uint16_t>(kTableBase + kCanaryIndex)) != Target(p)[kCanaryIndex];
+            need = a.ec.ReadXram(static_cast<std::uint16_t>(a.ec.TableBase() + kCanaryIndex)) != Target(p)[kCanaryIndex];
             if (need) AppLog(L"EC reloaded its table; re-applying.");
             else if (GetTickCount64() - a.lastFullVerify > 60000) {
                 need = a.ec.ReadTable() != Target(p);
@@ -692,18 +709,34 @@ void CmdApplyNbfc(App& a) {
         a.status = reason;
         return;
     }
-    if (!GetSetting(L"nbfc_consent")) {
+    // Consent is tied to this exact config file on this laptop (see ModelFingerprint).
+    const std::wstring consentKey = L"nbfc_consent_" + ModelFingerprint(a.model);
+    if (!GetSetting(consentKey)) {
         const bool match = identify::ModelNameMatches(a.nb.model, BiosString(L"SystemProductName"));
         const std::wstring text =
             L"This NoteBook FanControl config was written by " + (a.nb.author.empty() ? std::wstring(L"the community") : a.nb.author) +
             L" for \"" + a.nb.model + L"\". This laptop is \"" + BiosString(L"SystemProductName") + L"\"." +
-            (match ? L"" : L"\n\nTHE MODEL NAMES DO NOT MATCH.") +
             L"\n\nWhile your curve is on, the app writes the config's fan registers in the fan controller and runs the "
             L"curve itself. Closing the app hands the fans back to the firmware. A config made for different hardware "
-            L"can make fans misbehave; if anything sounds wrong, click 'Restore firmware control'.\n\nTurn on your curve?";
-        if (MessageBoxW(a.hwnd, text.c_str(), L"Use an NBFC config", MB_YESNO | (match ? MB_ICONQUESTION : MB_ICONWARNING)) != IDYES)
+            L"can make fans misbehave; if anything sounds wrong, click 'Restore firmware control'.";
+        TASKDIALOGCONFIG tc{};
+        tc.cbSize = sizeof(tc);
+        tc.hwndParent = a.hwnd;
+        tc.pszWindowTitle = L"Use an NBFC config";
+        tc.pszMainIcon = match ? TD_INFORMATION_ICON : TD_WARNING_ICON;
+        tc.pszMainInstruction = match ? L"Turn on this NBFC config?" : L"This config was made for a different model name";
+        tc.pszContent = text.c_str();
+        tc.dwCommonButtons = TDCBF_YES_BUTTON | TDCBF_NO_BUTTON;
+        tc.nDefaultButton = IDNO;
+        if (!match) tc.pszVerificationText = L"I am sure this config is for this laptop's exact hardware";
+        int button = 0;
+        BOOL sure = FALSE;
+        if (FAILED(TaskDialogIndirect(&tc, &button, nullptr, &sure)) || button != IDYES) return;
+        if (!match && !sure) {
+            a.status = L"Not turned on: tick the confirmation box to use a config made for a different model name.";
             return;
-        PutSetting(L"nbfc_consent", 1);
+        }
+        PutSetting(consentKey, 1);
     }
     a.nbSaved = a.nbDraft;
     p.hasSaved = true;
@@ -814,6 +847,8 @@ std::vector<std::filesystem::path> ModelDirs() { return {fs::path(ExeDirectory()
 bool LoadModelIntoApp(App& a) {
     if (a.nbEngine.Running()) StopNbfc(a, L"model changed");
     a.nbfcMode = false;
+    if (a.model.source != L"builtin")  // never trusted from the definition file itself
+        a.model.confirmed = GetSetting(L"confirmed_" + ModelFingerprint(a.model)) != 0;
     if (a.model.backend == L"nbfc") {
         if (!LoadNbfcModel(a)) return false;
         a.ec.Configure(a.model.tableBase, a.model.readCmd, a.model.writeCmd);
@@ -954,7 +989,7 @@ void CmdConfirm(App& a) {
         }
         a.identifyLog.push_back(L"Confirm: fan registers read: " + readings);
         a.model.confirmed = true;
-        SaveModel(a.model.source, a.model);
+        PutSetting(L"confirmed_" + ModelFingerprint(a.model), 1);
         AppLog(L"Identify: NBFC model confirmed; " + readings);
         a.status = L"Fan registers read: " + readings + L" Turn on your curve and listen to the fans the first time.";
         return;
@@ -995,7 +1030,8 @@ void CmdConfirm(App& a) {
         a.identifyLog.push_back(L"Confirm: corrected the mode mapping for code " + std::to_wstring(code) + L".");
     }
     a.model.confirmed = true;
-    SaveModel(a.model.source, a.model);
+    SaveModel(a.model.source, a.model);  // keeps a corrected mode mapping
+    PutSetting(L"confirmed_" + ModelFingerprint(a.model), 1);
     LoadProfiles(a);
     for (Profile& p : a.profiles)
         if (p.code == code) {
@@ -2043,7 +2079,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int show) {
         const UINT dpi = GetDpiForSystem();
         RECT r{0, 0, LONG(kWinW * dpi / 96.f), LONG(kWinH * dpi / 96.f)};
         AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
-        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.0 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
+        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.1 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
                                     r.right - r.left, r.bottom - r.top, nullptr, nullptr, instance, nullptr);
         if (!hwnd) {
             rc = 1;

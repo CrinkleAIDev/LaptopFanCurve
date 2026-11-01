@@ -77,8 +77,14 @@ polls, after 5 EC errors, and when the app closes.
 2. **BIOS scan.** Looks for 12×10-byte tables that match the Acer layout rules above. `.exe`, `.zip` and
    `.7z` files are unpacked with 7-Zip, two levels deep. Consecutive tables at a 120-byte stride form a
    group. The first four are mapped to AcerSense codes Silent 2, Normal 0, Performance 3 and Turbo 4.
+   A draft is only made when the DSDT shows the verified Acer EC layout: an EC device whose shared-memory
+   window (a SystemMemory region at `0xFE70xxxx`) contains the `FNLV` fan-level field (`AcerEcFamily`).
+   Other laptops never receive Acer's private EC commands; they get a report.
 3. **Confirm.** One consented read of the live table, matched against the BIOS tables. If the live table
    belongs to a different slot, the mode mapping is corrected. For NBFC, Confirm reads the fan registers once.
+   The result is stored in local settings as `confirmed_<fingerprint>`. `ModelFingerprint` hashes the identity,
+   EC commands, table address, mode mapping and tables (or the NBFC config bytes). A `confirmed` value inside an
+   `.ini` file is ignored. NBFC consent is stored per fingerprint as well.
 
 Definitions are saved as `%LOCALAPPDATA%\LaptopFanCurve\models\<product>.ini`. Files in a `models` folder
 next to the exe are loaded too, so tested definitions can be shipped.

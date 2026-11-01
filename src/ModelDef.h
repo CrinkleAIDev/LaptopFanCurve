@@ -1,7 +1,8 @@
 // Model definitions: everything the app needs to know about one laptop model.
 // The built-in definition is the verified Acer Swift X 16 SFX16-61G (BIOS 1.56).
-// Definitions created by Identify are stored as .ini files and start unconfirmed:
-// the app reads the live EC once (with the user's consent) before using them.
+// Definitions created by Identify are stored as .ini files. A file can never mark itself as
+// confirmed: confirmation is stored per laptop, keyed by ModelFingerprint(), and is only set
+// after the app has read the live EC once (with the user's consent).
 #pragma once
 #include "FactoryTables.h"
 
@@ -24,7 +25,7 @@ struct ModelDef {
     std::wstring source = L"builtin";                  // "builtin" or the .ini path
     std::uint8_t readCmd = 0x92, writeCmd = 0x93;      // EC extended-RAM commands (ports 0x66/0x62)
     std::uint16_t tableBase = 0x0800;                  // active fan table in EC RAM
-    bool confirmed = true;                             // live EC table matched a factory table
+    bool confirmed = true;                             // builtin: verified; files: from local settings only
     std::wstring backend = L"acer_table";              // "acer_table" or "nbfc"
     std::wstring nbfcConfig;                           // NBFC backend: imported config file
     std::vector<ProfileDef> profiles;
@@ -112,7 +113,7 @@ inline bool LoadModel(const std::filesystem::path& path, ModelDef& m) {
     r.readCmd = static_cast<std::uint8_t>(ParseNumber(IniGet(f, L"model", L"read_cmd")));
     r.writeCmd = static_cast<std::uint8_t>(ParseNumber(IniGet(f, L"model", L"write_cmd")));
     r.tableBase = static_cast<std::uint16_t>(ParseNumber(IniGet(f, L"model", L"table_base")));
-    r.confirmed = ParseNumber(IniGet(f, L"model", L"confirmed")) != 0;
+    r.confirmed = false;  // never trusted from the file; see ModelFingerprint
     const std::wstring backend = IniGet(f, L"model", L"backend");
     if (!backend.empty()) r.backend = backend;
     if (r.backend == L"nbfc") {
@@ -156,7 +157,7 @@ inline bool SaveModel(const std::filesystem::path& path, const ModelDef& m) {
               put(L"model", L"product", m.product) && put(L"model", L"board", m.board) &&
               put(L"model", L"bios", m.bios) && put(L"model", L"read_cmd", hex(m.readCmd)) &&
               put(L"model", L"write_cmd", hex(m.writeCmd)) && put(L"model", L"table_base", hex(m.tableBase)) &&
-              put(L"model", L"confirmed", m.confirmed ? L"1" : L"0") &&
+
               put(L"model", L"profiles", std::to_wstring(m.profiles.size())) && put(L"model", L"backend", m.backend) &&
               (m.nbfcConfig.empty() || put(L"model", L"config", m.nbfcConfig));
     for (std::size_t i = 0; ok && i < m.profiles.size(); ++i) {
@@ -168,6 +169,28 @@ inline bool SaveModel(const std::filesystem::path& path, const ModelDef& m) {
              put(sec.c_str(), L"accent", accent) && put(sec.c_str(), L"table", TableToHex(p.factory));
     }
     return ok;
+}
+
+// Stable fingerprint of everything that decides what the app writes: identity, EC commands,
+// table address, profile mapping and tables (or the NBFC config file's bytes).
+inline std::uint64_t Fnv1a(const void* data, std::size_t size, std::uint64_t h = 1469598103934665603ull) {
+    const auto* p = static_cast<const unsigned char*>(data);
+    for (std::size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+inline std::wstring ModelFingerprint(const ModelDef& m) {
+    std::wstring id = m.backend + L"|" + m.manufacturer + L"|" + m.product + L"|" + m.board + L"|" + m.bios + L"|" +
+                      std::to_wstring(m.readCmd) + L"|" + std::to_wstring(m.writeCmd) + L"|" + std::to_wstring(m.tableBase);
+    for (const ProfileDef& p : m.profiles) id += L"|" + p.name + L":" + std::to_wstring(p.code) + L":" + TableToHex(p.factory);
+    std::uint64_t h = Fnv1a(id.data(), id.size() * sizeof(wchar_t));
+    if (m.backend == L"nbfc") {
+        std::ifstream f(m.nbfcConfig, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(f)), {});
+        h = Fnv1a(bytes.data(), bytes.size(), h);
+    }
+    wchar_t buf[17];
+    swprintf_s(buf, L"%016llx", static_cast<unsigned long long>(h));
+    return buf;
 }
 
 // Definition files live in "models" beside the exe (shipped) and in the user's

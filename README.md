@@ -2,12 +2,14 @@
 
 Custom fan curves for Windows laptops, with a drag-and-drop curve editor.
 
-![status](https://img.shields.io/badge/status-beta-orange) ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![build](https://github.com/CrinkleAIDev/LaptopFanCurve/actions/workflows/build.yml/badge.svg) ![status](https://img.shields.io/badge/status-beta-orange) ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 Laptop Fan Curve lets you draw your own temperature-to-fan-speed curve for each fan, and for each
 vendor performance mode where the laptop supports it. It was built for the **Acer Swift X 16
 (SFX16-61G)**, where no existing fan tool worked. The **Identify** feature helps you set up other
 laptops.
+
+![Laptop Fan Curve editing the Silent fan curve](docs/screenshot.png)
 
 > **Before you start:** install **[PawnIO](https://pawnio.eu)** (free). The app needs this driver to reach
 > the fans and won't work without it. If PawnIO is missing, the app shows a **Setup needed** card with a
@@ -74,13 +76,17 @@ Open **Identify laptop...** in Settings. The app opens there automatically on an
 1. **Scan** reads the model, the ACPI firmware tables and the vendor WMI interfaces. It never writes anything.
 2. **Find the fan settings**:
    - **Acer:** click **BIOS file...** and choose the BIOS update downloaded from Acer's support site for
-     your exact model. The app finds the fan tables in it. The file is read, never run.
+     your exact model. The app finds the fan tables in it. The file is read, never run. A definition is only
+     created when the laptop's fan controller has the same layout as the verified Acer family; other laptops
+     get a report instead.
    - **Other brands:** click **How?**. Then download your model's config from the
      [NBFC configs](https://github.com/hirschmann/nbfc/tree/master/Configs) (or
      [nbfc-linux configs](https://github.com/nbfc-linux/nbfc-linux/tree/main/share/nbfc/configs)), and
      click **NBFC config...**. The model name must match your laptop.
 3. **Use** saves the definition.
 4. **Confirm** reads the fan controller once and checks it. Curves can only be applied after this.
+   Confirmation is stored on your laptop only. A definition file shared by someone else always has to be
+   confirmed again.
 
 If nothing works, click **Save report...** and attach the report to a
 [new issue](../../issues/new). Reports contain your laptop's model, its firmware's fan and temperature
@@ -91,12 +97,15 @@ fields, and its WMI class names. They contain no personal files.
 - The app checks each vendor table against the live fan controller before it ever writes to it. If the check
   fails, custom curves stay disabled for that mode.
 - **Acer laptops:** your curve is written into the fan controller's own table, so the laptop's firmware
-  keeps running the fans. If a curve that cools less than Acer's lets the CPU or GPU reach 95 °C, Acer's
-  curve is restored automatically. A reboot, or **Restore all Acer curves**, always brings back the
-  factory curves.
+  keeps running the fans. While the app is running and your curve cools less than Acer's, it restores
+  Acer's curve if the CPU or GPU reaches 95 °C, or if temperature readings stop for about 10 seconds.
+  If the app is closed or crashes, your curve stays in place until a reboot or a mode switch. The laptop's
+  built-in thermal protection (CPU/GPU throttling) still applies. A reboot, or **Restore all Acer curves**,
+  always brings back the factory curves.
 - **NBFC laptops:** the app runs the curve itself, like NBFC does. Above the config's critical temperature
   the fans run at 100%. If the temperature reading is lost, the app hands the fans back to the firmware,
-  and it does the same whenever the app closes.
+  and it does the same whenever the app closes. Turning a config on asks for consent once per config file.
+  If the config's model name differs from your laptop's, you must also tick an "I am sure" box.
 - Five fan-controller errors in a row turn the custom curve off.
 
 ## Troubleshooting
@@ -125,7 +134,9 @@ build.cmd
 ```
 
 The script builds `bin\LaptopFanCurve.exe`, copies the PawnIO module next to it, and creates the
-release zip in `dist\`. See [docs/TECHNICAL.md](docs/TECHNICAL.md) for how the app works.
+release zip in `dist\`. `tests\run_tests.cmd` runs the hardware-independent tests (NBFC rules,
+BIOS table scanner, model definitions). GitHub Actions runs both on every push. See
+[docs/TECHNICAL.md](docs/TECHNICAL.md) for how the app works.
 
 ## Contributing
 

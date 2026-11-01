@@ -164,6 +164,20 @@ inline std::vector<std::uint8_t> ReadDsdt() {
     return d;
 }
 
+// Same embedded-controller layout as the verified Acer family (SFX16-61G): an EC device whose
+// shared-memory window (a SystemMemory region at 0xFE70xxxx) carries Acer's FNLV fan-level field.
+// Only laptops that match may receive Acer's private EC read command during Confirm.
+inline bool AcerEcFamily(const Aml& aml) {
+    if (!aml.hasEcDevice) return false;
+    for (const Field& f : aml.fields) {
+        if (f.name != "FNLV") continue;
+        for (const Region& reg : aml.regions)
+            if (reg.name == f.region && reg.space == 0 && reg.known && (reg.base & 0xFFFF0000ull) == 0xFE700000ull)
+                return true;
+    }
+    return false;
+}
+
 inline bool LooksThermal(const std::string& n) {
     static const char* hints[] = {"FAN", "FN", "RPM", "TMP", "TEM", "PWM", "FSP", "TACH", "THM", "TH", "DUTY"};
     for (const char* h : hints)
@@ -293,6 +307,7 @@ inline std::vector<TableGroup> ScanBiosFile(const std::filesystem::path& file, s
 struct Result {
     std::wstring manufacturer, product, board, bios;
     Aml aml;
+    bool acerFamily = false;
     std::vector<std::wstring> wmiClasses;
     std::vector<TableGroup> groups;
     std::vector<std::wstring> notes;
@@ -351,6 +366,7 @@ inline void Fingerprint(Result& r, AcerWmi& wmi) {
     r.board = BiosString(L"BaseBoardProduct");
     r.bios = BiosString(L"BIOSVersion");
     r.aml = ParseAml(ReadDsdt());
+    r.acerFamily = AcerEcFamily(r.aml);
     r.wmiClasses = wmi.ListVendorClasses();
 }
 
@@ -361,6 +377,11 @@ inline void BuildDraft(Result& r) {
     const bool acer = r.manufacturer.find(L"Acer") != std::wstring::npos;
     if (!acer) { r.notes.push_back(L"Automatic definitions currently cover Acer laptops only."); return; }
     if (!HasClass(r, L"APGeAction")) { r.notes.push_back(L"Acer APGeAction WMI interface not found."); return; }
+    if (!r.acerFamily) {
+        r.notes.push_back(L"The fan-controller layout differs from the verified Acer family, so no definition was made. "
+                          L"Save a report and share it.");
+        return;
+    }
     if (r.groups.empty()) { r.notes.push_back(L"No fan tables found yet. Choose this laptop's BIOS update file."); return; }
     const TableGroup* best = &r.groups.front();
     for (const auto& g : r.groups)
@@ -413,6 +434,8 @@ inline std::vector<std::wstring> Summary(const Result& r) {
                                  L", " + std::to_wstring(r.aml.regions.size()) + L" regions (" + std::to_wstring(ecRegions) +
                                  L" EC), " + std::to_wstring(thermal) + L" fan/temperature fields"
                            : L"ACPI: DSDT could not be read");
+    out.push_back(r.acerFamily ? L"EC layout: matches the verified Acer family"
+                               : L"EC layout: does not match the verified Acer family");
     std::wstring wmi = L"WMI: ";
     for (const wchar_t* k : {L"APGeAction", L"AcerGamingFunction", L"AcerGenericMethod"})
         if (HasClass(r, k)) wmi += std::wstring(k) + L"  ";
