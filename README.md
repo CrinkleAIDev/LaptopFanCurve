@@ -1,0 +1,120 @@
+# Laptop Fan Curve
+
+Custom fan curves for Windows laptops, with a drag-and-drop curve editor.
+
+![status](https://img.shields.io/badge/status-beta-orange) ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
+Laptop Fan Curve lets you draw your own temperature-to-fan-speed curve for each fan, and for each
+vendor performance mode where the laptop supports it. It was built for the **Acer Swift X 16
+(SFX16-61G)**, where no existing fan tool worked. The **Identify** feature helps you set up other
+laptops.
+
+> **Use at your own risk.** This app writes to your laptop's embedded controller, the chip that runs
+> the fans. Wrong settings can make a laptop run hot or loud. The app has safety checks (see
+> [Safety](#safety)), but it is not affiliated with or endorsed by Acer or any laptop manufacturer.
+
+## Features
+
+- A **fan curve editor**. Drag points, or fine-tune with the arrow keys. It shows a separate CPU and GPU fan
+  curve, the vendor default as a dashed line, and a live "now" marker.
+- **Per-mode curves.** On supported Acer laptops, Silent, Normal, Performance and Turbo each keep their own curve.
+- **Live sensors.** CPU and GPU temperature, fan speed, and 3-minute history graphs.
+- It **stays applied**. The app re-applies your curve after mode switches and sleep, and runs from the tray.
+- It can **start with Windows** without a UAC prompt.
+- **Identify** for other laptops. It reads the laptop's firmware description and either:
+  - finds Acer-style fan tables in the manufacturer's BIOS update file, or
+  - imports your model's [NoteBook FanControl](https://github.com/hirschmann/nbfc) config.
+- A **report export** for unsupported laptops, so support can be added.
+
+## Supported laptops
+
+| Laptop | How it works | Status |
+|---|---|---|
+| Acer Swift X 16 SFX16-61G, BIOS 1.56 | Built in. Writes the fan tables the embedded controller already uses. | **Tested** |
+| Other Acer laptops with the same fan-controller family | Identify, then choose the BIOS update file. | Untested, needs testers |
+| Laptops with a NoteBook FanControl config | Identify, then import the model's NBFC config. | Untested, needs testers |
+| Desktop PCs | Not supported. Use [Fan Control](https://getfancontrol.com). | n/a |
+
+## Requirements
+
+1. **Windows 10 or 11, 64-bit**, and an administrator account. The app asks for elevation.
+2. **[PawnIO](https://pawnio.eu)**, a signed driver for hardware access. Install it with
+   [PawnIO_setup.exe](https://github.com/namazso/PawnIO.Setup/releases/latest/download/PawnIO_setup.exe).
+   The required PawnIO module `LpcACPIEC.bin` is included in the download.
+3. Optional: **[7-Zip](https://www.7-zip.org)**, so Identify can unpack BIOS update installers by itself.
+
+## Install
+
+1. Install PawnIO (see above).
+2. Download `LaptopFanCurve-<version>-win-x64.zip` from [Releases](../../releases) and extract it to
+   a folder you keep, for example `C:\Program Files\LaptopFanCurve`.
+3. Run `LaptopFanCurve.exe`. Keep `LpcACPIEC.bin` in the same folder.
+
+Windows SmartScreen may warn you, because the app is not code-signed. Choose **More info → Run anyway**,
+or build it yourself from source.
+
+## Using it
+
+- **Tabs** choose which vendor mode you are editing. **Use \<mode\> now** switches the laptop to that mode.
+- **Drag points** on the chart. Each point is a fan stage: when the temperature reaches the point, the fan
+  steps to that speed. Click a point and use the arrow keys for 1 °C or 1 step changes. Tab selects
+  the next point.
+- **Apply** saves the curve and turns it on. The switch next to it turns your curve on or off.
+- **Acer values** / **Config values** loads the defaults back into the editor.
+- With a custom curve on, closing the window keeps the app running in the tray.
+
+### Setting up another laptop (Identify)
+
+Open **Identify laptop...** in Settings. The app opens there automatically on an unknown laptop.
+
+1. **Scan** reads the model, the ACPI firmware tables and the vendor WMI interfaces. It never writes anything.
+2. **Find the fan settings**:
+   - **Acer:** click **BIOS file...** and choose the BIOS update downloaded from Acer's support site for
+     your exact model. The app finds the fan tables in it. The file is read, never run.
+   - **Other brands:** click **How?**. Then download your model's config from the
+     [NBFC configs](https://github.com/hirschmann/nbfc/tree/master/Configs) (or
+     [nbfc-linux configs](https://github.com/nbfc-linux/nbfc-linux/tree/main/share/nbfc/configs)), and
+     click **NBFC config...**. The model name must match your laptop.
+3. **Use** saves the definition.
+4. **Confirm** reads the fan controller once and checks it. Curves can only be applied after this.
+
+If nothing works, click **Save report...** and attach the report to a
+[new issue](../../issues/new). Reports contain your laptop's model, its firmware's fan and temperature
+fields, and its WMI class names. They contain no personal files.
+
+## Safety
+
+- The app checks each vendor table against the live fan controller before it ever writes to it. If the check
+  fails, custom curves stay disabled for that mode.
+- **Acer laptops:** your curve is written into the fan controller's own table, so the laptop's firmware
+  keeps running the fans. If a curve that cools less than Acer's lets the CPU or GPU reach 95 °C, Acer's
+  curve is restored automatically. A reboot, or **Restore all Acer curves**, always brings back the
+  factory curves.
+- **NBFC laptops:** the app runs the curve itself, like NBFC does. Above the config's critical temperature
+  the fans run at 100%. If the temperature reading is lost, the app hands the fans back to the firmware,
+  and it does the same whenever the app closes.
+- Five fan-controller errors in a row turn the custom curve off.
+
+## Building from source
+
+Requires Visual Studio 2022 or later with the "Desktop development with C++" workload.
+
+```
+build.cmd
+```
+
+The script builds `bin\LaptopFanCurve.exe`, copies the PawnIO module next to it, and creates the
+release zip in `dist\`. See [docs/TECHNICAL.md](docs/TECHNICAL.md) for how the app works.
+
+## Contributing
+
+Testers with other Acer laptops or NBFC-supported laptops are the most useful help right now. Open
+an issue with your Identify report, and say what worked and what did not.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The bundled PawnIO module is LGPL-2.1; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Acer, AcerSense and Swift are trademarks of Acer Inc. This project is independent and is not
+affiliated with or endorsed by Acer.
