@@ -40,8 +40,7 @@ constexpr std::size_t kTableSize = 120;
 constexpr std::size_t kRowSize = 10;
 using Table = std::array<std::uint8_t, kTableSize>;
 
-// Factory Silent table: BIOS V1.56 EC image, matched 120/120 on this machine
-// (Ubuntu and Windows reads).
+// Factory Silent table: BIOS V1.56, matched 120/120 against a live SFX16-61G.
 constexpr Table kFactorySilent = {
     0x00, 0xff, 0x30, 0x00, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x05, 0x32, 0x2d, 0x32, 0x2d, 0x05, 0xdc, 0x06, 0xcc,
@@ -401,9 +400,8 @@ public:
         return true;
     }
 
-    // APGeAction.SetFunction function 7, operation 0: the same call AcerSense
-    // makes. Firmware sets FNLV and sends EC command 0x83, which reloads the
-    // built-in table for that profile.
+    // APGeAction.SetFunction function 7, operation 0: the same call AcerSense makes when you pick a
+    // mode. The laptop reloads its built-in fan table for that mode.
     bool SetFactoryProfile(unsigned code, std::uint64_t& rawOut) {
         const unsigned long long input = (static_cast<unsigned long long>(code) << 16) | 0x07;
         VARIANT v;

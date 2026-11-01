@@ -240,7 +240,7 @@ struct Profile {
 
 enum Id : int {
     kNone = 0, kTab0 = 1, kFanCpu = 10, kFanGpu, kToggleCustom, kReset, kSwitchTo, kApply, kToggleStartup,
-    kRestoreAll, kIdentifyView, kScan, kChooseBios, kUseDraft, kConfirm, kSaveReport, kBack, kImportNbfc, kNbfcHelp,
+    kRestoreAll, kIdentifyView, kScan, kChooseBios, kUseDraft, kConfirm, kSaveReport, kBack, kImportNbfc, kNbfcHelp, kGetPawnIO, kCheckAgain,
     kFan0 = 40, kTrayOpen = 100, kTrayRestoreExit, kTrayExit
 };
 constexpr UINT WM_TRAY = WM_APP + 1;
@@ -1363,6 +1363,47 @@ void SensorCard(App& a, float top, const std::wstring& name, const std::wstring&
     }
 }
 
+// ---------------------------------------------------------------------------
+// Setup help: explains in plain words why the fan controller cannot be reached.
+// ---------------------------------------------------------------------------
+constexpr wchar_t kPawnIOPage[] = L"https://pawnio.eu";
+struct SetupHelp {
+    std::wstring title, text;
+    bool offerDownload;
+};
+SetupHelp EcHelp(const App& a) {
+    const std::wstring& e = a.ecError;
+    auto has = [&](const wchar_t* s) { return e.find(s) != std::wstring::npos; };
+    if (has(L"PawnIOLib.dll not found") || has(L"exports missing"))
+        return {L"Setup needed: install PawnIO",
+                L"Laptop Fan Curve uses PawnIO, a free signed driver, to talk to the fan controller. Download and install "
+                L"it, then click Check again. The app also keeps checking by itself.",
+                true};
+    if (has(L"pawnio_open failed"))
+        return {L"PawnIO is installed but its driver is not running",
+                L"Restart Windows once after installing PawnIO. If this keeps happening, reinstall the latest PawnIO.", true};
+    if (has(L"LpcACPIEC.bin"))
+        return {L"LpcACPIEC.bin is missing",
+                L"Keep LpcACPIEC.bin (it comes in the download zip) in the same folder as LaptopFanCurve.exe, then click "
+                L"Check again.",
+                false};
+    if (has(L"rejected"))
+        return {L"PawnIO did not accept its module", L"Update PawnIO to the latest version, then click Check again.", true};
+    return {L"The fan controller cannot be reached", e, false};
+}
+
+void DrawSetupCard(App& a, const D2D1_RECT_F& r) {
+    const SetupHelp h = EcHelp(a);
+    Fill(a, r, 14, Rgb(0x2A2110));
+    Stroke(a, r, 14, Rgb(0xF59E0B, 0.7f));
+    Text(a, h.title, R(r.left + 24, r.top + 16, r.right - 24, r.top + 42), a.fBodyBold.Get(), Rgb(0xF59E0B));
+    Text(a, h.text, R(r.left + 24, r.top + 46, r.right - 330, r.bottom - 12), a.fSmall.Get(), Rgb(kText, 0.9f),
+         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    const float y = r.top + (r.bottom - r.top) / 2 - 18;
+    if (h.offerDownload) ButtonW(a, R(r.right - 310, y, r.right - 150, y + 36), kGetPawnIO, L"Download PawnIO", true, true, 0xF59E0B);
+    ButtonW(a, R(r.right - 140, y, r.right - 24, y + 36), kCheckAgain, L"Check again", false, true, 0);
+}
+
 // Identify screen: four steps, results summary, report.
 void DrawIdentify(App& a) {
     const D2D1_RECT_F card = R(340, 100, 1180, 760);
@@ -1411,7 +1452,14 @@ void DrawIdentify(App& a) {
         Text(a, lines[i], R(364, 488.f + 21.f * i, 1160, 508.f + 21.f * i), a.fSmall.Get(), Rgb(kText, 0.85f));
 
     ButtonW(a, R(364, 712, 520, 746), kSaveReport, L"Save report...", false, true, 0);
-    Text(a, a.status, R(536, 712, 1160, 746), a.fSmall.Get(), Rgb(kMuted));
+    if (!a.ecOk) {
+        const SetupHelp h = EcHelp(a);
+        Text(a, h.title, R(536, 712, 850, 746), a.fBodyBold.Get(), Rgb(0xF59E0B));
+        if (h.offerDownload) ButtonW(a, R(860, 712, 1010, 746), kGetPawnIO, L"Download PawnIO", true, true, 0xF59E0B);
+        ButtonW(a, R(1020, 712, 1148, 746), kCheckAgain, L"Check again", false, true, 0);
+    } else {
+        Text(a, a.status, R(536, 712, 1160, 746), a.fSmall.Get(), Rgb(kMuted));
+    }
 }
 
 void Paint(App& a) {
@@ -1523,6 +1571,14 @@ void Paint(App& a) {
 
     // Chart and actions
     DrawChart(a);
+    if (!a.ecOk) {  // nothing below works without the fan controller: show why instead
+        DrawSetupCard(a, R(340, 616, 1180, 760));
+        if (a.rt->EndDraw() == D2DERR_RECREATE_TARGET) {
+            a.rt.Reset();
+            a.brush.Reset();
+        }
+        return;
+    }
 
     const D2D1_RECT_F ac = R(340, 616, 1180, 760);
     Fill(a, ac, 14, Rgb(kCard));
@@ -1705,6 +1761,11 @@ void Command(App& a, int id) {
         CmdConfirm(a);
     } else if (id == kSaveReport) {
         CmdSaveReport(a);
+    } else if (id == kGetPawnIO) {
+        ShellExecuteW(a.hwnd, L"open", kPawnIOPage, nullptr, nullptr, SW_SHOWNORMAL);
+    } else if (id == kCheckAgain) {
+        ConnectEc(a);
+        a.status = a.ecOk ? L"Connected to the fan controller." : L"Still not available.";
     } else if (id == kImportNbfc) {
         CmdImportNbfc(a);
     } else if (id == kNbfcHelp) {
