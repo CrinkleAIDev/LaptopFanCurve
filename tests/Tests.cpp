@@ -1,8 +1,10 @@
-// Hardware-independent tests: NBFC config reader and engine (against a simulated EC),
+// Hardware-independent tests: NBFC config reader and engine (against a simulated EC), safety decisions
+// under simulated failures (watchdog, lost readings, EC errors),
 // the BIOS fan-table scanner, the Acer EC-family check and model-definition handling.
 // All fixtures below are written for these tests (fictional models); no third-party configs.
 // Build and run: tests\run_tests.cmd
 #include "../src/Identify.h"
+#include "../src/Safety.h"
 
 #include <cstdio>
 #include <map>
@@ -163,12 +165,75 @@ void TestModelDefs() {
     Check(ModelFingerprint(back) != fp, "fingerprint changes with the tables");
 }
 
+void TestSafety() {
+    using safety::AcerAction;
+    int missing = 0;
+    // Acer watchdog: only a quieter-than-Acer curve is guarded.
+    Check(safety::AcerWatchdog(missing, true, true, true, 90, 80) == AcerAction::None, "quieter curve at 90C: keep");
+    Check(safety::AcerWatchdog(missing, true, true, true, 70, 95) == AcerAction::RestoreHot, "GPU reaches 95C: restore");
+    Check(safety::AcerWatchdog(missing, true, false, true, 99, 99) == AcerAction::None, "curve cooling at least as much as Acer's: not guarded");
+    Check(safety::AcerWatchdog(missing, false, true, true, 99, 99) == AcerAction::None, "curve not applied: nothing to restore");
+
+    missing = 0;
+    AcerAction last = AcerAction::None;
+    for (int tick = 1; tick <= 4; ++tick) last = safety::AcerWatchdog(missing, true, true, false, 0, 0);
+    Check(last == AcerAction::None, "readings missing for 4 ticks: wait");
+    Check(safety::AcerWatchdog(missing, true, true, false, 0, 0) == AcerAction::RestoreNoReadings, "missing for 5 ticks: restore");
+    missing = 0;
+    for (int tick = 1; tick <= 3; ++tick) safety::AcerWatchdog(missing, true, true, false, 0, 0);
+    safety::AcerWatchdog(missing, true, true, true, 60, 60);  // a reading comes back
+    for (int tick = 1; tick <= 4; ++tick) last = safety::AcerWatchdog(missing, true, true, false, 0, 0);
+    Check(last == AcerAction::None, "a returning reading resets the count");
+
+    // NBFC: lost temperature hands the fans back.
+    missing = 0;
+    Check(safety::NbfcTemperature(missing, true) == safety::NbfcAction::Run, "NBFC with a reading: run");
+    for (int tick = 1; tick <= 4; ++tick) Check(safety::NbfcTemperature(missing, false) == safety::NbfcAction::Wait, "NBFC without a reading: wait");
+    Check(safety::NbfcTemperature(missing, false) == safety::NbfcAction::HandBack, "NBFC without a reading for 5 ticks: hand back");
+
+    // EC errors: five in a row turn the custom curve off; a success in between resets the count.
+    int errors = 0;
+    bool reached = false;
+    for (int i = 1; i <= 4; ++i) reached = safety::EcErrorLimitReached(errors, true);
+    Check(!reached, "4 EC errors: keep going");
+    safety::EcErrorLimitReached(errors, false);
+    for (int i = 1; i <= 4; ++i) reached = safety::EcErrorLimitReached(errors, true);
+    Check(!reached, "a success resets the EC error count");
+    Check(safety::EcErrorLimitReached(errors, true), "5th consecutive EC error: turn the curve off");
+    Check(errors == 0, "error count starts over afterwards");
+
+    // Re-apply and Confirm's first-row probe.
+    Check(safety::NeedsReapply(false, 0x41, 0x41), "not applied: write the table");
+    Check(safety::NeedsReapply(true, 0x40, 0x41), "EC reloaded its table (canary changed): write again");
+    Check(!safety::NeedsReapply(true, 0x41, 0x41), "canary intact: nothing to do");
+    for (const Table& t : kFactoryTables) Check(safety::LooksLikeFanTableRow0(t.data()), "factory row 0 passes the probe");
+    const std::uint8_t zeros[10] = {}, ones[10] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    Check(!safety::LooksLikeFanTableRow0(zeros) && !safety::LooksLikeFanTableRow0(ones), "non-table bytes stop Confirm");
+
+    // Scenario: an NBFC curve is running and the temperature reading disappears.
+    nbfc::Config c;
+    std::wstring err;
+    nbfc::Load(TempFile(L"scenario.xml", kXml), c, err);
+    MockEc ec;
+    nbfc::Engine engine;
+    engine.Start(c, {c.fans[0].thresholds});
+    missing = 0;
+    const int temps[] = {60, 60, -1, -1, -1, -1, -1};  // -1 = no reading
+    for (int t : temps) {
+        const safety::NbfcAction act = safety::NbfcTemperature(missing, t >= 0);
+        if (act == safety::NbfcAction::Run) engine.Step(ec, t);
+        else if (act == safety::NbfcAction::HandBack && engine.Running()) engine.Stop(ec);
+    }
+    Check(!engine.Running() && ec.mem[50] == 1, "scenario: fans handed back with reset values after the reading was lost");
+}
+
 }  // namespace
 
 int main() {
     TestNbfc();
     TestIdentify();
     TestModelDefs();
+    TestSafety();
     std::printf("\n%d failure(s)\n", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

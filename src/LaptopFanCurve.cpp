@@ -9,6 +9,7 @@
 // - Each profile's factory table is checked against the live EC once before the
 //   app will ever write that profile.
 #include "Identify.h"
+#include "Safety.h"
 
 #include <commctrl.h>
 #include <commdlg.h>
@@ -52,7 +53,7 @@ namespace {
 // ===========================================================================
 constexpr std::size_t kCanaryIndex = 0x77;
 constexpr int kMinTemp = 30, kMaxTemp = 100, kMinRpm = 1000, kMaxRpm = 5000, kChartRpm = 5000;
-constexpr unsigned kWatchdogC = 95;
+using safety::kWatchdogC;
 
 std::size_t UpIndex(int row, int fan) { return static_cast<std::size_t>(row * 10 + 2 + fan * 2); }
 std::size_t DownIndex(int row, int fan) { return UpIndex(row, fan) + 1; }
@@ -481,8 +482,9 @@ void NbTick(App& a) {
         a.nbRead.clear();
         for (const auto& f : a.nb.fans) a.nbRead.push_back(nbfc::Engine::ReadPercent(port, f));
         if (p.enabled) {
-            if (!a.nbTempOk) {
-                if (++a.nbTempFails >= 5 && a.nbEngine.Running()) {
+            const safety::NbfcAction temp = safety::NbfcTemperature(a.nbTempFails, a.nbTempOk);
+            if (temp != safety::NbfcAction::Run) {
+                if (temp == safety::NbfcAction::HandBack && a.nbEngine.Running()) {
                     a.nbEngine.Stop(port);
                     p.applied = false;
                     AppLog(L"NBFC: no temperature reading; fans returned to the firmware.");
@@ -490,7 +492,6 @@ void NbTick(App& a) {
                 }
                 return;
             }
-            a.nbTempFails = 0;
             if (!a.nbEngine.Running()) {
                 a.nbEngine.Start(a.nb, a.nbSaved);
                 AppLog(L"NBFC control started.");
@@ -502,13 +503,12 @@ void NbTick(App& a) {
             p.applied = false;
             AppLog(L"NBFC control stopped.");
         }
-        a.failures = 0;
+        safety::EcErrorLimitReached(a.failures, false);
     } catch (const std::exception& e) {
         AppLog(L"EC error: " + Widen(e.what()));
-        if (++a.failures >= 5) {
+        if (safety::EcErrorLimitReached(a.failures, true)) {
             p.enabled = false;
             SaveNbfc(a);
-            a.failures = 0;
             StopNbfc(a, L"repeated EC errors");
             Notify(a, L"Custom fan curve stopped", L"Repeated EC errors. The fans were handed back to the firmware.");
             a.status = L"Stopped after repeated EC errors; the firmware controls the fans again.";
@@ -634,22 +634,16 @@ void Tick(App& a) {
     try {
         if (p.verified == Verify::Unknown) VerifyProfile(a, p);
         if (!p.enabled || p.tripped || p.verified != Verify::Ok) return;
-        // A quieter-than-Acer curve needs working temperature readings for the 95 C watchdog;
-        // without them for about 10 s, go back to Acer's curve.
-        if (p.applied && !a.tele.ok && Quieter(p.saved, p.factory)) {
-            if (++a.teleFails >= 5) {
-                a.teleFails = 0;
-                p.tripped = true;
-                RestoreProfile(a, p, L"temperature readings unavailable");
-                Notify(a, L"Acer fan curve restored", L"Temperature readings stopped, so your quieter curve was turned off for safety.");
-                a.status = L"Temperature readings stopped; Acer's curve was restored for safety.";
-                return;
-            }
-        } else {
-            a.teleFails = 0;
+        const safety::AcerAction guard = safety::AcerWatchdog(a.teleFails, p.applied, Quieter(p.saved, p.factory), a.tele.ok,
+                                                              a.tele.cpuTemp, a.tele.gpuTemp);
+        if (guard == safety::AcerAction::RestoreNoReadings) {
+            p.tripped = true;
+            RestoreProfile(a, p, L"temperature readings unavailable");
+            Notify(a, L"Acer fan curve restored", L"Temperature readings stopped, so your quieter curve was turned off for safety.");
+            a.status = L"Temperature readings stopped; Acer's curve was restored for safety.";
+            return;
         }
-        if (p.applied && a.tele.ok && (a.tele.cpuTemp >= kWatchdogC || a.tele.gpuTemp >= kWatchdogC) &&
-            Quieter(p.saved, p.factory)) {
+        if (guard == safety::AcerAction::RestoreHot) {
             p.tripped = true;
             RestoreProfile(a, p, L"watchdog at " + std::to_wstring(std::max(a.tele.cpuTemp, a.tele.gpuTemp)) + L" C");
             Notify(a, L"Acer fan curve restored", std::wstring(L"Temperature reached 95 \u00B0C with your quieter ") +
@@ -660,7 +654,8 @@ void Tick(App& a) {
         bool need = !p.applied;
         if (!need) {
             EcLock lock(1000);
-            need = a.ec.ReadXram(static_cast<std::uint16_t>(a.ec.TableBase() + kCanaryIndex)) != Target(p)[kCanaryIndex];
+            need = safety::NeedsReapply(p.applied, a.ec.ReadXram(static_cast<std::uint16_t>(a.ec.TableBase() + kCanaryIndex)),
+                                        Target(p)[kCanaryIndex]);
             if (need) AppLog(L"EC reloaded its table; re-applying.");
             else if (GetTickCount64() - a.lastFullVerify > 60000) {
                 need = a.ec.ReadTable() != Target(p);
@@ -669,16 +664,15 @@ void Tick(App& a) {
             }
         }
         if (need) ApplyProfile(a, p);
-        a.failures = 0;
+        safety::EcErrorLimitReached(a.failures, false);
     } catch (const std::exception& e) {
         AppLog(L"EC error: " + Widen(e.what()));
-        if (++a.failures >= 5) {
+        if (safety::EcErrorLimitReached(a.failures, true)) {
             p.enabled = false;
             SaveProfile(p);
             RestoreProfile(a, p, L"repeated EC errors");
             Notify(a, L"Custom fan curve stopped", L"Repeated EC errors. Acer's curve was restored.");
             a.status = L"Stopped after repeated EC errors; Acer's curve restored.";
-            a.failures = 0;
         }
     }
 }
@@ -995,14 +989,26 @@ void CmdConfirm(App& a) {
         return;
     }
     if (MessageBoxW(a.hwnd,
-                    L"Confirm reads the active fan table from the embedded controller once, using the Acer "
-                    L"EC-family read command. Nothing is written.\n\nThe command was found on other Acer models; on a "
-                    L"laptop with a different controller it could be misunderstood. Continue?",
-                    L"Confirm with laptop", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                    L"EXPERIMENTAL: this laptop model has not been tested with Laptop Fan Curve.\n\n"
+                    L"Confirm reads the active fan table from the embedded controller using the Acer EC-family read "
+                    L"command. Nothing is written. It reads the first 10 bytes and stops at once if they do not look "
+                    L"like a fan table.\n\nYour firmware matches the verified Acer layout, but that cannot prove the "
+                    L"controller understands the command the same way. Continue?",
+                    L"Confirm with laptop (experimental)", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
         return;
     Table live{};
     try {
         EcLock lock(1000);
+        std::uint8_t row0[kRowSize];
+        for (std::size_t i = 0; i < kRowSize; ++i) row0[i] = a.ec.ReadXram(static_cast<std::uint16_t>(a.ec.TableBase() + i));
+        if (!safety::LooksLikeFanTableRow0(row0)) {
+            Table first{};
+            std::copy(std::begin(row0), std::end(row0), first.begin());
+            a.identifyLog.push_back(L"Confirm: the first bytes are not a fan table: " + HexTable(first).substr(0, 30));
+            AppLog(L"Identify confirm stopped: first row is not a fan table.");
+            a.status = L"Stopped: the controller did not return a fan table. Nothing was written. Save a report and share it.";
+            return;
+        }
         live = a.ec.ReadTable();
     } catch (const std::exception& e) {
         a.status = L"Read failed: " + Widen(e.what());
@@ -1459,7 +1465,8 @@ void DrawIdentify(App& a) {
          kChooseBios, L"BIOS file...", !a.found.groups.empty() || a.found.hasNbfc, true},
         {L"Use the definition", L"Saves the fan tables found as this laptop's model definition.", kUseDraft, L"Use",
          usingIdentified, a.found.hasDraft},
-        {L"Confirm with the laptop", L"Reads the live fan table once and checks it against the BIOS. Required before any curve is applied.",
+        {usingIdentified ? L"Confirm with the laptop (experimental)" : L"Confirm with the laptop",
+         L"Reads the live fan table once and checks it against the BIOS. Required before any curve is applied.",
          kConfirm, L"Confirm", a.hasModel && a.model.confirmed, a.hasModel && !a.model.confirmed && a.ecOk},
     };
     for (int i = 0; i < 4; ++i) {
@@ -1510,7 +1517,8 @@ void Paint(App& a) {
     Circle(a, D2D1::Point2F(42, 46), 20, Rgb(activeAccent, 0.16f));
     FanGlyph(a.rt.Get(), a.brush.Get(), D2D1::Point2F(42, 46), 15, Rgb(activeAccent), Rgb(kBg));
     Text(a, L"Laptop Fan Curve", R(74, 26, 330, 52), a.fTitle.Get(), Rgb(kText));
-    Text(a, a.hasModel ? a.model.title + (a.model.confirmed ? L"" : L" \u00B7 unconfirmed") : std::wstring(L"Laptop not identified yet"),
+    Text(a, a.hasModel ? a.model.title + (!a.model.confirmed ? L" \u00B7 unconfirmed" : a.model.source != L"builtin" ? L" \u00B7 experimental" : L"")
+                       : std::wstring(L"Laptop not identified yet"),
          R(75, 52, 330, 70), a.fSmall.Get(), Rgb(kMuted));
 
     // Profile tabs (or the Identify title bar)
@@ -2079,7 +2087,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int show) {
         const UINT dpi = GetDpiForSystem();
         RECT r{0, 0, LONG(kWinW * dpi / 96.f), LONG(kWinH * dpi / 96.f)};
         AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
-        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.1 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
+        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.2 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
                                     r.right - r.left, r.bottom - r.top, nullptr, nullptr, instance, nullptr);
         if (!hwnd) {
             rc = 1;

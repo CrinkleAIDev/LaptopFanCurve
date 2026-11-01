@@ -37,7 +37,7 @@ laptops.
 | Laptop | How it works | Status |
 |---|---|---|
 | Acer Swift X 16 SFX16-61G, BIOS 1.56 | Built in. Writes the fan tables the embedded controller already uses. | **Tested** in Silent mode. Normal, Performance and Turbo are checked against the laptop automatically the first time they are used. |
-| Other Acer laptops with the same fan-controller family | Identify, then choose the BIOS update file. | Untested, needs testers |
+| Other Acer laptops with the same fan-controller family | Identify, then choose the BIOS update file. | **Experimental.** Untested, testers wanted. |
 | Laptops with a NoteBook FanControl config | Identify, then import the model's NBFC config. | Untested, needs testers |
 | Desktop PCs | Not supported. Use [Fan Control](https://getfancontrol.com). | n/a |
 
@@ -86,7 +86,10 @@ Open **Identify laptop...** in Settings. The app opens there automatically on an
 3. **Use** saves the definition.
 4. **Confirm** reads the fan controller once and checks it. Curves can only be applied after this.
    Confirmation is stored on your laptop only. A definition file shared by someone else always has to be
-   confirmed again.
+   confirmed again. On Acer models other than the SFX16-61G, Confirm is **experimental**: a matching firmware
+   layout is a strong sign, not proof, that the fan controller works the same way. Confirm reads the first
+   10 bytes and stops immediately if they don't look like a fan table. These models are labelled
+   "experimental" in the app.
 
 If nothing works, click **Save report...** and attach the report to a
 [new issue](../../issues/new). Reports contain your laptop's model, its firmware's fan and temperature
@@ -135,7 +138,7 @@ build.cmd
 
 The script builds `bin\LaptopFanCurve.exe`, copies the PawnIO module next to it, and creates the
 release zip in `dist\`. `tests\run_tests.cmd` runs the hardware-independent tests (NBFC rules,
-BIOS table scanner, model definitions). GitHub Actions runs both on every push. See
+BIOS table scanner, model definitions, and the safety logic under simulated failures). GitHub Actions runs both on every push. See
 [docs/TECHNICAL.md](docs/TECHNICAL.md) for how the app works.
 
 ## Contributing

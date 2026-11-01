@@ -8,7 +8,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build app and release zip
         shell: cmd
@@ -19,7 +19,7 @@ jobs:
         run: tests\run_tests.cmd
 
       - name: Upload release zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LaptopFanCurve-win-x64
           path: dist/*.zip

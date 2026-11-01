@@ -13,6 +13,7 @@ fan settings, and where to start when adding support for a laptop.
 | `src/FactoryTables.h` | Factory fan tables for the built-in SFX16-61G model |
 | `src/Identify.h` | Read-only discovery: SMBIOS, DSDT parsing, WMI classes, BIOS table scan, reports |
 | `src/Nbfc.h` | NoteBook FanControl config reader (XML and JSON) and the control engine |
+| `src/Safety.h` | Safety decisions (watchdog, lost readings, EC error limit, re-apply, Confirm probe), tested in `tests/` |
 
 ## EC access
 
@@ -82,6 +83,8 @@ polls, after 5 EC errors, and when the app closes.
    Other laptops never receive Acer's private EC commands; they get a report.
 3. **Confirm.** One consented read of the live table, matched against the BIOS tables. If the live table
    belongs to a different slot, the mode mapping is corrected. For NBFC, Confirm reads the fan registers once.
+   On untested Acer models Confirm is experimental. It first reads row 0 (10 bytes) and stops unless it looks like
+   a fan-table row (`safety::LooksLikeFanTableRow0`).
    The result is stored in local settings as `confirmed_<fingerprint>`. `ModelFingerprint` hashes the identity,
    EC commands, table address, mode mapping and tables (or the NBFC config bytes). A `confirmed` value inside an
    `.ini` file is ignored. NBFC consent is stored per fingerprint as well.
