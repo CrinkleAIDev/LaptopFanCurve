@@ -117,6 +117,7 @@ If the app can't reach the fan controller, it shows a **Setup needed** card inst
 
 | Message in the app | What to do |
 |---|---|
+| **Laptop Fan Curve needs administrator rights** | Click **Restart as administrator** and allow the Windows prompt, or right-click `LaptopFanCurve.exe` → **Run as administrator**. |
 | **Setup needed: install PawnIO** | Install [PawnIO](https://pawnio.eu), then click **Check again**. The app also keeps checking by itself. |
 | **PawnIO is installed but its driver is not running** | Restart Windows once after installing PawnIO. If it keeps happening, reinstall the latest PawnIO. |
 | **LpcACPIEC.bin is missing** | Keep `LpcACPIEC.bin` from the download zip in the same folder as `LaptopFanCurve.exe`. |

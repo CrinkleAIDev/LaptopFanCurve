@@ -244,7 +244,7 @@ struct Profile {
 
 enum Id : int {
     kNone = 0, kTab0 = 1, kFanCpu = 10, kFanGpu, kToggleCustom, kReset, kSwitchTo, kApply, kToggleStartup,
-    kRestoreAll, kIdentifyView, kScan, kChooseBios, kUseDraft, kConfirm, kSaveReport, kBack, kImportNbfc, kNbfcHelp, kGetPawnIO, kCheckAgain,
+    kRestoreAll, kIdentifyView, kScan, kChooseBios, kUseDraft, kConfirm, kSaveReport, kBack, kImportNbfc, kNbfcHelp, kGetPawnIO, kCheckAgain, kRelaunchAdmin,
     kFan0 = 40, kTrayOpen = 100, kTrayRestoreExit, kTrayExit
 };
 constexpr UINT WM_TRAY = WM_APP + 1;
@@ -305,6 +305,7 @@ struct App {
     NOTIFYICONDATAW tray{};
 };
 App* g = nullptr;
+HANDLE g_single = nullptr;  // single-instance mutex (released before relaunching elevated)
 
 int IndexOfCode(App& a, unsigned code) {
     for (std::size_t i = 0; i < a.profiles.size(); ++i)
@@ -1412,10 +1413,16 @@ constexpr wchar_t kPawnIOPage[] = L"https://pawnio.eu";
 struct SetupHelp {
     std::wstring title, text;
     bool offerDownload;
+    bool offerElevate = false;
 };
 SetupHelp EcHelp(const App& a) {
     const std::wstring& e = a.ecError;
     auto has = [&](const wchar_t* s) { return e.find(s) != std::wstring::npos; };
+    if (!IsElevated())
+        return {L"Laptop Fan Curve needs administrator rights",
+                L"Windows started the app without administrator rights, so it cannot reach the fan controller. Click "
+                L"Restart as administrator and allow the Windows prompt.",
+                false, true};
     if (has(L"PawnIOLib.dll not found") || has(L"exports missing"))
         return {L"Setup needed: install PawnIO",
                 L"Laptop Fan Curve uses PawnIO, a free signed driver, to talk to the fan controller. Download and install "
@@ -1442,6 +1449,10 @@ void DrawSetupCard(App& a, const D2D1_RECT_F& r) {
     Text(a, h.text, R(r.left + 24, r.top + 46, r.right - 330, r.bottom - 12), a.fSmall.Get(), Rgb(kText, 0.9f),
          DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
     const float y = r.top + (r.bottom - r.top) / 2 - 18;
+    if (h.offerElevate) {
+        ButtonW(a, R(r.right - 270, y, r.right - 24, y + 36), kRelaunchAdmin, L"Restart as administrator", true, true, 0xF59E0B);
+        return;
+    }
     if (h.offerDownload) ButtonW(a, R(r.right - 310, y, r.right - 150, y + 36), kGetPawnIO, L"Download PawnIO", true, true, 0xF59E0B);
     ButtonW(a, R(r.right - 140, y, r.right - 24, y + 36), kCheckAgain, L"Check again", false, true, 0);
 }
@@ -1498,8 +1509,12 @@ void DrawIdentify(App& a) {
     if (!a.ecOk) {
         const SetupHelp h = EcHelp(a);
         Text(a, h.title, R(536, 712, 850, 746), a.fBodyBold.Get(), Rgb(0xF59E0B));
-        if (h.offerDownload) ButtonW(a, R(860, 712, 1010, 746), kGetPawnIO, L"Download PawnIO", true, true, 0xF59E0B);
-        ButtonW(a, R(1020, 712, 1148, 746), kCheckAgain, L"Check again", false, true, 0);
+        if (h.offerElevate) {
+            ButtonW(a, R(920, 712, 1148, 746), kRelaunchAdmin, L"Restart as administrator", true, true, 0xF59E0B);
+        } else {
+            if (h.offerDownload) ButtonW(a, R(860, 712, 1010, 746), kGetPawnIO, L"Download PawnIO", true, true, 0xF59E0B);
+            ButtonW(a, R(1020, 712, 1148, 746), kCheckAgain, L"Check again", false, true, 0);
+        }
     } else {
         Text(a, a.status, R(536, 712, 1160, 746), a.fSmall.Get(), Rgb(kMuted));
     }
@@ -1805,6 +1820,20 @@ void Command(App& a, int id) {
         CmdConfirm(a);
     } else if (id == kSaveReport) {
         CmdSaveReport(a);
+    } else if (id == kRelaunchAdmin) {
+        // Release the single-instance mutex first, or the new elevated copy would just activate this window.
+        wchar_t exe[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        if (g_single) CloseHandle(g_single);
+        g_single = nullptr;
+        const auto r = reinterpret_cast<INT_PTR>(ShellExecuteW(a.hwnd, L"runas", exe, nullptr, nullptr, SW_SHOWNORMAL));
+        if (r > 32) {
+            a.quitting = true;
+            DestroyWindow(a.hwnd);
+            return;
+        }
+        g_single = CreateMutexW(nullptr, TRUE, L"Local\\LaptopFanCurveApp");
+        a.status = L"The administrator prompt was cancelled.";
     } else if (id == kGetPawnIO) {
         ShellExecuteW(a.hwnd, L"open", kPawnIOPage, nullptr, nullptr, SW_SHOWNORMAL);
     } else if (id == kCheckAgain) {
@@ -2043,7 +2072,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\LaptopFanCurveApp");
+    g_single = CreateMutexW(nullptr, TRUE, L"Local\\LaptopFanCurveApp");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         if (HWND existing = FindWindowW(kWindowClass, nullptr)) {
             ShowWindow(existing, SW_SHOW);
@@ -2087,7 +2116,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int show) {
         const UINT dpi = GetDpiForSystem();
         RECT r{0, 0, LONG(kWinW * dpi / 96.f), LONG(kWinH * dpi / 96.f)};
         AdjustWindowRectExForDpi(&r, style, FALSE, 0, dpi);
-        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.2 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
+        HWND hwnd = CreateWindowExW(0, kWindowClass, L"Laptop Fan Curve 0.1.3 (beta)", style, CW_USEDEFAULT, CW_USEDEFAULT,
                                     r.right - r.left, r.bottom - r.top, nullptr, nullptr, instance, nullptr);
         if (!hwnd) {
             rc = 1;
@@ -2105,6 +2134,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR cmdLine, int show) {
         g = nullptr;
     }
     CoUninitialize();
-    if (single) CloseHandle(single);
+    if (g_single) CloseHandle(g_single);
     return rc;
 }
